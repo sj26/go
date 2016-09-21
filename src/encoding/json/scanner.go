@@ -31,6 +31,12 @@ func checkValid(data []byte, scan *scanner) error {
 	return nil
 }
 
+// IsValid verifies that data is valid JSON-encoded data.
+func IsValid(data []byte) bool {
+	err := checkValid(data, &scanner{})
+	return err == nil
+}
+
 // nextValue splits data after the next whole JSON value,
 // returning that value and the bytes that follow it as separate slices.
 // scan is passed in for use by nextValue to avoid an allocation.
