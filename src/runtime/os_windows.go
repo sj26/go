@@ -51,8 +51,6 @@ const (
 //go:cgo_import_dynamic runtime._WaitForSingleObject WaitForSingleObject%2 "kernel32.dll"
 //go:cgo_import_dynamic runtime._WriteConsoleW WriteConsoleW%5 "kernel32.dll"
 //go:cgo_import_dynamic runtime._WriteFile WriteFile%5 "kernel32.dll"
-//go:cgo_import_dynamic runtime._timeBeginPeriod timeBeginPeriod%1 "winmm.dll"
-//go:cgo_import_dynamic runtime._timeEndPeriod timeEndPeriod%1 "winmm.dll"
 
 type stdFunction unsafe.Pointer
 
@@ -100,8 +98,6 @@ var (
 	_WaitForSingleObject,
 	_WriteConsoleW,
 	_WriteFile,
-	_timeBeginPeriod,
-	_timeEndPeriod,
 	_ stdFunction
 
 	// Following syscalls are only available on some Windows PCs.
@@ -109,6 +105,7 @@ var (
 	_AddDllDirectory,
 	_AddVectoredContinueHandler,
 	_GetQueuedCompletionStatusEx,
+	_LoadLibraryExA,
 	_LoadLibraryExW,
 	_ stdFunction
 
@@ -126,6 +123,10 @@ var (
 	// links wrong printf function to cgo executable (see issue
 	// 12030 for details).
 	_NtWaitForSingleObject stdFunction
+
+	// Load winmm.dll manually during startup to avoid dll hijack
+	_timeBeginPeriod,
+	_timeEndPeriod stdFunction
 )
 
 // Function to be called by windows CreateThread
@@ -182,6 +183,7 @@ func loadOptionalSyscalls() {
 	_AddDllDirectory = windowsFindfunc(k32, []byte("AddDllDirectory\000"))
 	_AddVectoredContinueHandler = windowsFindfunc(k32, []byte("AddVectoredContinueHandler\000"))
 	_GetQueuedCompletionStatusEx = windowsFindfunc(k32, []byte("GetQueuedCompletionStatusEx\000"))
+	_LoadLibraryExA = windowsFindfunc(k32, []byte("LoadLibraryExA\000"))
 	_LoadLibraryExW = windowsFindfunc(k32, []byte("LoadLibraryExW\000"))
 
 	var advapi32dll = []byte("advapi32.dll\000")
@@ -197,6 +199,19 @@ func loadOptionalSyscalls() {
 		throw("ntdll.dll not found")
 	}
 	_NtWaitForSingleObject = windowsFindfunc(n32, []byte("NtWaitForSingleObject\000"))
+
+	var winmmdll = []byte("winmm.dll\000")
+	var winmm uintptr
+	if _LoadLibraryExA != nil {
+		winmm = stdcall3(_LoadLibraryExA, uintptr(unsafe.Pointer(&winmmdll[0])), 0, 0x00000800)
+	} else {
+		winmm = stdcall1(_LoadLibraryA, uintptr(unsafe.Pointer(&winmmdll[0])))
+	}
+	if winmm == 0 {
+		throw("winmm.dll not found")
+	}
+	_timeBeginPeriod = windowsFindfunc(winmm, []byte("timeBeginPeriod\000"))
+	_timeEndPeriod = windowsFindfunc(winmm, []byte("timeEndPeriod\000"))
 
 	if windowsFindfunc(n32, []byte("wine_get_version\000")) != nil {
 		// running on Wine
@@ -288,10 +303,14 @@ const osRelaxMinNS = 60 * 1e6
 // if we're already using the CPU, but if all Ps are idle there's no
 // need to consume extra power to drive the high-res timer.
 func osRelax(relax bool) uint32 {
-	if relax {
-		return uint32(stdcall1(_timeEndPeriod, 1))
+	if _timeBeginPeriod != nil && _timeEndPeriod != nil {
+		if relax {
+			return uint32(stdcall1(_timeEndPeriod, 1))
+		} else {
+			return uint32(stdcall1(_timeBeginPeriod, 1))
+		}
 	} else {
-		return uint32(stdcall1(_timeBeginPeriod, 1))
+		return 0
 	}
 }
 
